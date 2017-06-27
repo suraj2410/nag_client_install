@@ -1,0 +1,61 @@
+---
+- hosts: all
+  vars:
+    - IP: "{{hostvars[inventory_hostname]['ansible_default_ipv4']['address']}}"
+  tasks:
+    - name: copy resolv conf
+      copy: src=/etc/resolv.conf dest=/etc/resolv.conf
+
+    - name: update yum packages
+      yum: name=* state=latest update_cache=yes
+
+    - name: Copy the packages file to the host
+      copy: src=files/packages.zip dest=/tmp/packages.zip
+
+    - name: Install packages required
+      package: name={{ item }} state=installed
+      with_items:
+        - unzip
+        - gcc
+        - glibc
+        - glibc-common
+        - xinetd
+  
+    - name: Unzip packages folder
+      unarchive: src=/tmp/packages.zip copy=no dest=/tmp creates=/tmp/package
+
+    - name: Install repo
+      command: rpm -ivh /tmp/package/epel-release-6-8.noarch.rpm
+      failed_when: false
+
+    - name: Adding nagios group
+      group: name=nagios state=present
+
+    - name: Adding Nagios User to the group
+      user: name=nagios groups=nagios
+
+    - name: Installing Nagios Plugins
+      shell: cd /tmp/package/nagios-plugins-2.1.2 && ./configure && make && make install creates=/usr/local/nagios
+
+    - name: Changing file ownership
+      command: chown nagios.nagios /usr/local/nagios
+
+    - name: Changing File permissions
+      command: chown -R nagios.nagios /usr/local/nagios/libexec
+
+    - name: Installing NRPE plugin now
+      shell: cd /tmp/package/nrpe-2.15 && ./configure && make all && make install-plugin && make install-daemon && make install-daemon-config && make install-xinetd
+
+    - shell: cat /etc/services | grep -i nrpe
+      register: nrpe_present
+      failed_when: false
+
+    - name: Adding NRPE daemon to services file
+      when: nrpe_present.rc != 0
+      shell: echo "nrpe            5666/tcp                 NRPE" >> /etc/services creates=/tmp/services
+
+    - name: copying xinedt.conf file
+      template: src=templates/nrpe dest=/etc/xinetd.d/nrpe
+
+    - name: Restarting xinetd
+      service: name=xinetd state=restarted
